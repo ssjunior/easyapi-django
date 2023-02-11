@@ -1,3 +1,4 @@
 .DS_STORE
 dist
 easyapi_django.egg-info/
+.python-version

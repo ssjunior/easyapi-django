@@ -14,8 +14,8 @@ pip install easyapi-django
 
 ```
 MIDDLEWARE = [
-...
-'easyapi.ExceptionMiddleware',
+    ...
+    'easyapi.ExceptionMiddleware',
 ]
 ```
 
@@ -27,10 +27,10 @@ from easyapi import BaseResource
 from your_models import YOUR_DJANGO_MODEL
 
 class ResourceName(BaseResource):
-model = YOUR_DJANGO_MODEL
+    model = YOUR_DJANGO_MODEL
 ```
 
-# Add to your routes url
+## Add to your routes url
 
 ```
 from easyapi.routes import get_routes
@@ -38,12 +38,12 @@ from easyapi.routes import get_routes
 from resourcefile import ResourceName
 
 endpoints = {
-'endpointname(.\*)$': ResourceName,
+    'endpointname(.\*)$': ResourceName,
 }
 routes = get_routes(endpoints)
 
 urlpatterns = [
-...
+    ...
 ] + routes
 ```
 
