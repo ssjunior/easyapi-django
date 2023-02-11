@@ -91,3 +91,47 @@ class ResourceName(BaseResource):
         'field1', 'field2', 'field3', 'field3'
     ]
 ```
+
+### Count
+
+By default in list calls, the api does not return the total of objects due to slow count in innodb tables used in MySql,
+but, it is very easy to get count objects simple add
+
+```
+?count=true
+```
+
+at your request. The api will return the total count of objects and will consider whatever filter or search applied
+
+```
+{
+    count: 90
+}
+```
+
+### Search
+
+To search you can use any field defined above in search_fields.
+The search will be applied in all fields defined using OR.
+
+```
+?search=value
+```
+
+### Filter
+
+To filter just use querystrings. The filter will only be applied in defined fields above in filter_fields.
+
+```
+?field_name=value
+?field_name__lte=value
+?field_name__startswith=value
+```
+
+you can filter using the following modifiers
+
+```
+__isnull|__gte|__lte|__lt|__gt|__startswith
+```
+
+You can combine filters, search and count in the same get. You can search and filter in related models/fields too.

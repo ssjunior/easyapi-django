@@ -201,7 +201,6 @@ class BaseResource(View):
         if self.filter_fields:
             filter = {}
             for key in params:
-                print(key)
                 if search_regex.search(key):
                     keys = key.split('__')
                     if len(keys) == 3:
@@ -420,18 +419,14 @@ class BaseResource(View):
                 for key, value in self.list_related_fields.items():
                     result[key] = {}
                     result[key]['id'] = result[f'{key}__id']
-                    print(f'{key}__id')
                     del result[f'{key}__id']
                     for field in value:
                         # if result.get(f'{key}__{field}'):
                         try:
-                            print(key, field)
                             result[key][field] = result[f'{key}__{field}']
                             del result[f'{key}__{field}']
                         except Exception as err:
                             print('ERRO', err)
-                            # print(result)
-                            # print(result['nfe_id'])
 
             results.append(result)
 
@@ -492,9 +487,7 @@ class BaseResource(View):
         match = re_id.match(request.path)
         if match:
             id = match[2]
-            print('ID', id)
             data = await self.get_obj(id)
-            print('DATA', data)
             return self.serialize(data)
         else:
             data = await self._get_objs(request)
