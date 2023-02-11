@@ -136,6 +136,33 @@ __isnull|__gte|__lte|__lt|__gt|__startswith
 
 You can combine filters, search and count in the same get. You can search and filter in related models/fields too.
 
+### Pagination
+
+You have a free pagination system using easyapi. The default number of results is 25 and the default order uses id. You can change this values per Resource.
+
+```
+class ResourceName(BaseResource):
+    model = YOUR_DJANGO_MODEL
+
+    limit = 25
+    order_by = 'id'
+
+```
+
+If you set you limit to 0, all records will be returned.
+
+To paginate just add to your call
+
+```
+?page=value
+```
+
+you can chage the default values dinamically too:
+
+```
+?page=value&limit=value&order_by=(field_name|-field_name)
+```
+
 ## Waittttt, there is more FREE Bonus
 
 You can add relative endpoints very easy, just add a new route and the funcion that you want to call with the allowed methods.
