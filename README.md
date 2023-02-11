@@ -135,3 +135,26 @@ __isnull|__gte|__lte|__lt|__gt|__startswith
 ```
 
 You can combine filters, search and count in the same get. You can search and filter in related models/fields too.
+
+## Waittttt, there is more FREE Bonus
+
+You can add relative endpoints very easy, just add a new route and the funcion that you want to call with the allowed methods.
+In the examples below we are creating 2 endpoints routes: accept and refuse that will call 2 functions (accept and refuse) that should return a response.
+
+```
+class ResourceName(BaseResource):
+    model = YOUR_DJANGO_MODEL
+
+    routes = [
+            {
+                'path': r'(\d*)/accept$',
+                'func': 'accept',
+                'allowed_methods': ['patch']
+            },
+            {
+                'path': r'(\d*)/refuse$',
+                'func': 'refuse',
+                'allowed_methods': ['delete']
+            },
+    ]
+```
