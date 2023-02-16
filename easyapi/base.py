@@ -1,6 +1,7 @@
 # from typing import Any
 
 import decimal
+import importlib
 import json
 import re
 from functools import reduce
@@ -17,14 +18,26 @@ import operator
 
 from django.http import JsonResponse
 
-
-from modules.maintenance.util import find_connection
-from modules.orm.filters import Filter as OrmFilter
-from settings.context import session
 from .exception import HTTPException
 
 re_id = re.compile(r'(.*)\/(\d+)(\/.)?$')
 search_regex = re.compile(r'__isnull|__gte|__lte|__lt|__gt|__startswith')
+
+
+async def fake_tenant(*args, **kwargs):
+    return 'default'
+
+
+tenant = importlib.find_loader('tenant')
+if tenant:
+    tenant = importlib.import_module('tenant')
+    set_tenant = tenant.set_tenant
+    OrmFilter = tenant.Filter
+    session = tenant.session
+else:
+    set_tenant = fake_tenant
+    OrmFilter = None
+    session = None
 
 
 async def method_not_allowed(self, **kwargs):
@@ -44,6 +57,7 @@ def decoder(obj):
 
 
 class BaseResource(View):
+    authenticated = False
     allowed_methods = ['delete', 'get', 'patch', 'post']
     routes = []
 
@@ -66,7 +80,6 @@ class BaseResource(View):
 
     related_models = None
     list_related_fields = None
-    # related_fields = []
     many_to_many_models = {}
 
     filter_fields = []
@@ -88,7 +101,7 @@ class BaseResource(View):
     normalize_list = False
 
     def __init__(self):
-        user_session = session.get()
+        user_session = session.get() if session else None
         self.account_id = user_session['account'].id if user_session else None
         self.account = user_session['account'] if user_session else None
         self.user = user_session['user'] if user_session else None
@@ -143,10 +156,11 @@ class BaseResource(View):
         if func:
             self.allowed_methods = allowed_methods or self.allowed_methods
 
+        if self.authenticated and not self.user:
+            raise HTTPException(401, 'Not authorized')
+
         if method not in self.allowed_methods:
-            return HTTPException(
-                status=405, detail=f'{method} not allowed'
-            )
+            raise HTTPException(405, f'{method} not allowed')
 
         if not func:
             handler = getattr(self, method, method_not_allowed)
@@ -313,7 +327,7 @@ class BaseResource(View):
 
     # count só se aplica a listagens
     @sync_to_async
-    def count(self):
+    def count(self, account_db):
         count = 0
         self.count_results = 10
         if not hasattr(self.queryset, 'query'):
@@ -326,7 +340,6 @@ class BaseResource(View):
             f'SELECT count(DISTINCT {table}.id) FROM',
             query,
         )
-        account_db = find_connection(self.account_id)
         connection = connections[account_db]
         cursor = connection.cursor()
         cursor.execute(query, params)
@@ -347,12 +360,13 @@ class BaseResource(View):
         if not conditions:
             return
 
-        queryset = OrmFilter(
-            self.model,
-            self.user.timezone or 'UTC'
-        )
-        queryset = queryset.filter_by(conditions)
-        self.queryset = queryset.distinct()
+        if OrmFilter:
+            queryset = OrmFilter(
+                self.model,
+                self.user.timezone if self.user else 'UTC'
+            )
+            queryset = queryset.filter_by(conditions)
+            self.queryset = queryset.distinct()
 
     async def return_results(self, results):
         if self.count_results:
@@ -392,7 +406,8 @@ class BaseResource(View):
         self.filter_objs()
 
         if request.GET.get('count'):
-            return await self.count()
+            account_db = await set_tenant(self.account_id)
+            return await self.count(account_db)
 
         if self.page > 0:
             start = (self.page - 1) * self.limit
@@ -600,14 +615,14 @@ class BaseResource(View):
             body = request.json
         except Exception:
             return HTTPException(
-                status=400, detail='Invalid body'
+                400, 'Invalid body'
             )
         match = re_id.match(request.path_info)
         if match:
             results = await self._update_obj(match[2], body)
             return self.serialize(results)
         else:
-            return HTTPException(status=404, detail="Item not found")
+            return HTTPException(404, "Item not found")
 
     #########################################################
     # POST

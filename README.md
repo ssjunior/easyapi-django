@@ -90,6 +90,9 @@ class ResourceName(BaseResource):
     edit_fields = [
         'field1', 'field2', 'field3', 'field3'
     ]
+
+    # define operator for searches
+    search_operator = 'icontains'
 ```
 
 ### Count
@@ -113,9 +116,19 @@ at your request. The api will return the total count of objects and will conside
 
 To search you can use any field defined above in search_fields.
 The search will be applied in all fields defined using OR.
+By default all searches are made using icontains. You can change it for any allowed Django search operator.
 
 ```
 ?search=value
+```
+
+To change the search operator define it in you Resource Class
+
+```
+class ResourceName(BaseResource):
+    model = YOUR_DJANGO_MODEL
+
+    search_operator = 'icontains'
 ```
 
 ### Filter
