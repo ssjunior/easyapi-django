@@ -11,13 +11,11 @@ from asgiref.sync import sync_to_async
 from django.db import connections
 from django.db.models import Q
 from django.forms.models import model_to_dict
+from django.http import JsonResponse
 from django.views import View
-
-# import orjson
 import operator
 
-from django.http import JsonResponse
-
+from .filters import Filter as OrmFilter
 from .exception import HTTPException
 
 re_id = re.compile(r'(.*)\/(\d+)(\/.)?$')
@@ -32,11 +30,9 @@ tenant = importlib.find_loader('tenant')
 if tenant:
     tenant = importlib.import_module('tenant')
     set_tenant = tenant.set_tenant
-    OrmFilter = tenant.Filter
     session = tenant.session
 else:
     set_tenant = fake_tenant
-    OrmFilter = None
     session = None
 
 
@@ -45,15 +41,8 @@ async def method_not_allowed(self, **kwargs):
 
 
 def decoder(obj):
-    # option=orjson.OPT_NON_STR_KEYS | orjson.OPT_NAIVE_UTC
-    # orjson.dumps(list(objects), option=orjson.OPT_NAIVE_UTC)
     if isinstance(obj, decimal.Decimal):
         return float(obj)
-
-
-# class JsonResponse(JsonResponse):
-#     def render(self, content: Any) -> bytes:
-#         return orjson.dumps(content, option=orjson.OPT_NON_STR_KEYS, default=decoder)
 
 
 class BaseResource(View):

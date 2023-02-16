@@ -9,10 +9,9 @@ from operator import __or__ as OR
 from operator import __and__ as AND
 from pytz import timezone as pytz_timezone
 
-from constants.custom_attributes import CustomAttributePresentations
-from util.date import Dates
-from ._util import normalize_field
-from util import make_list
+from .constants import CustomAttributePresentations
+from .dates import Dates
+from .util import make_list, normalize_field
 
 
 CHAR = [
@@ -403,9 +402,9 @@ class Filter(object):
                     if is_checkbox and value == 'false':
 
                         false_list = [pk for pk in self.working_model.filter(**{
-                                'custom_attributes__name': custom,
-                                '{}__{}'.format(custom_field, operator): value
-                            }).values_list('pk', flat=True)]
+                            'custom_attributes__name': custom,
+                            '{}__{}'.format(custom_field, operator): value
+                        }).values_list('pk', flat=True)]
 
                         _filter.update({
                             'pk__in': [pk for pk in self.working_model.exclude(
@@ -443,9 +442,9 @@ class Filter(object):
                             value = CastFloat(value)
 
                         working_model = self.working_model.filter(**{
-                                'custom_attributes__name': custom,
-                                '{}__{}'.format(custom_field, operator): value
-                            })
+                            'custom_attributes__name': custom,
+                            '{}__{}'.format(custom_field, operator): value
+                        })
 
                         ids = set(working_model.values_list(
                             'pk', flat=True

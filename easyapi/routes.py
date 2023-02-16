@@ -1,6 +1,8 @@
 from django.urls import path, re_path
 from django.http import HttpResponse
 
+from .calc_resource import Metrics
+
 
 def get_route(route, view):
     if hasattr(view, 'as_view'):
@@ -34,4 +36,5 @@ def get_routes(endpoints):
         get_route(key, value) for key, value in endpoints.items()
     ] + [
         path('docs', docs),
+        path('metrics', Metrics.as_view())
     ]
