@@ -3,6 +3,7 @@
 import decimal
 import importlib
 import json
+import os
 import re
 from functools import reduce
 from urllib import parse
@@ -14,9 +15,12 @@ from django.forms.models import model_to_dict
 from django.http import JsonResponse
 from django.views import View
 import operator
+from redis import asyncio as aioredis
 
 from .filters import Filter as OrmFilter
 from .exception import HTTPException
+
+from settings.env import REDIS_PREFIX
 
 re_id = re.compile(r'(.*)\/(\d+)(\/.)?$')
 search_regex = re.compile(r'__isnull|__gte|__lte|__lt|__gt|__startswith')
@@ -30,10 +34,8 @@ tenant = importlib.find_loader('tenant')
 if tenant:
     tenant = importlib.import_module('tenant')
     set_tenant = tenant.set_tenant
-    session = tenant.session
 else:
     set_tenant = fake_tenant
-    session = None
 
 
 async def method_not_allowed(self, **kwargs):
@@ -90,10 +92,6 @@ class BaseResource(View):
     normalize_list = False
 
     def __init__(self):
-        user_session = session.get() if session else None
-        self.account_id = user_session['account'].id if user_session else None
-        self.account = user_session['account'] if user_session else None
-        self.user = user_session['user'] if user_session else None
 
         if self.model:
             fields = []
@@ -137,6 +135,27 @@ class BaseResource(View):
         return None, None, None
 
     async def dispatch(self, request, *args, **kwargs) -> None:
+
+        REDIS_SERVER = os.environ['REDIS_SERVER']
+        REDIS_DB = 1
+        redis = await aioredis.Redis(
+            host=REDIS_SERVER, db=REDIS_DB, decode_responses=True
+        ).client()
+        session_key = request.COOKIES.get('sid')
+
+        prefix = f'{REDIS_PREFIX}:' if REDIS_PREFIX else ''
+        session_key = f'{prefix}sessions:{session_key}'
+        session = await redis.get(session_key)
+        await redis.close()
+
+        if self.authenticated and not session:
+            raise HTTPException(401, 'Not authorized')
+
+        session = json.loads(session)
+        self.user = session['user']
+        account = session.get('account')
+        self.account_db = await set_tenant(account)
+
         method = "get" if request.method == "HEAD" else request.method.lower()
 
         # func é o método que será executado, caso exista rota personalizada
@@ -316,7 +335,7 @@ class BaseResource(View):
 
     # count só se aplica a listagens
     @sync_to_async
-    def count(self, account_db):
+    def count(self):
         count = 0
         self.count_results = 10
         if not hasattr(self.queryset, 'query'):
@@ -329,7 +348,7 @@ class BaseResource(View):
             f'SELECT count(DISTINCT {table}.id) FROM',
             query,
         )
-        connection = connections[account_db]
+        connection = connections[self.account_db]
         cursor = connection.cursor()
         cursor.execute(query, params)
         count = cursor.fetchone()[0]
@@ -395,8 +414,7 @@ class BaseResource(View):
         self.filter_objs()
 
         if request.GET.get('count'):
-            account_db = await set_tenant(self.account_id)
-            return await self.count(account_db)
+            return await self.count()
 
         if self.page > 0:
             start = (self.page - 1) * self.limit
