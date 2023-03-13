@@ -11,10 +11,10 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "easyapi_django"
-version = "0.0.16"
+version = "0.0.17"
 authors = [
   { name="Stamatios Stamou Jr", email="bushier.outsets.0c@icloud.com" },
-
+]
 description = "A simple rest api generator for django based on models"
 readme = "README.md"
 requires-python = ">=3.7"

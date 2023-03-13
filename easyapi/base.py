@@ -151,10 +151,11 @@ class BaseResource(View):
         if self.authenticated and not session:
             raise HTTPException(401, 'Not authorized')
 
-        session = json.loads(session)
-        self.user = session['user']
-        account = session.get('account')
-        self.account_db = await set_tenant(account)
+        if session:
+            session = json.loads(session)
+            self.user = session['user']
+            account = session.get('account')
+            self.account_db = await set_tenant(account)
 
         method = "get" if request.method == "HEAD" else request.method.lower()
 
