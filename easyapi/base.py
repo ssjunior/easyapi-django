@@ -1,7 +1,7 @@
 # from typing import Any
 
 import decimal
-import importlib
+# import importlib
 import json
 import os
 import re
@@ -19,23 +19,11 @@ from redis import asyncio as aioredis
 
 from .filters import Filter as OrmFilter
 from .exception import HTTPException
-
+from .tenant.tenant import set_tenant
 from settings.env import REDIS_PREFIX
 
 re_id = re.compile(r'(.*)\/(\d+)(\/.)?$')
 search_regex = re.compile(r'__isnull|__gte|__lte|__lt|__gt|__startswith')
-
-
-async def fake_tenant(*args, **kwargs):
-    return 'default'
-
-
-tenant = importlib.find_loader('tenant')
-if tenant:
-    tenant = importlib.import_module('tenant')
-    set_tenant = tenant.set_tenant
-else:
-    set_tenant = fake_tenant
 
 
 async def method_not_allowed(self, **kwargs):
@@ -79,8 +67,10 @@ class BaseResource(View):
     list_fields = []
     edit_fields = []
     edit_related_fields = {}
+    edit_set = {}
     edit_exclude_fields = ['_state']
     update_fields = []
+    create_fields = []
 
     default_filter = None
     search_operator = 'icontains'
@@ -90,8 +80,16 @@ class BaseResource(View):
     data = None
 
     normalize_list = False
+    normalized = False
+
+    diff = {}
+
+    user = None
+    account = None
 
     def __init__(self):
+
+        self.diff = {}
 
         if self.model:
             fields = []
@@ -130,7 +128,7 @@ class BaseResource(View):
             match = re.search(route['path'], request.path)
             if match:
                 allowed_methods = route.get('allowed_methods')
-                return getattr(self, route['func']), match, allowed_methods
+                return getattr(self, route['func']), match.groupdict(), allowed_methods
 
         return None, None, None
 
@@ -143,9 +141,13 @@ class BaseResource(View):
         ).client()
         session_key = request.COOKIES.get('sid')
 
-        prefix = f'{REDIS_PREFIX}:' if REDIS_PREFIX else ''
-        session_key = f'{prefix}sessions:{session_key}'
-        session = await redis.get(session_key)
+        if session_key:
+            prefix = f'{REDIS_PREFIX}:' if REDIS_PREFIX else ''
+            session_key = f'{prefix}sessions:{session_key}'
+            session = await redis.get(session_key)
+        else:
+            session = None
+
         await redis.close()
 
         if self.authenticated and not session:
@@ -154,8 +156,14 @@ class BaseResource(View):
         if session:
             session = json.loads(session)
             self.user = session['user']
-            account = session.get('account')
-            self.account_db = await set_tenant(account)
+
+            self.account = session.get('account')
+            if self.account:
+                tenant = self.account['id']
+                self.account_id = tenant
+                self.account_db = await set_tenant(tenant)
+            else:
+                self.account_db = 'default'
 
         method = "get" if request.method == "HEAD" else request.method.lower()
 
@@ -174,10 +182,6 @@ class BaseResource(View):
         if not func:
             handler = getattr(self, method, method_not_allowed)
 
-        self.build_filters(request)
-        self.paginate(request)
-        self.ordenate(request)
-
         if method in ['post', 'patch']:
             try:
                 body = json.loads(request.body.decode('utf-8'))
@@ -189,17 +193,22 @@ class BaseResource(View):
             request.json = body
         else:
             body = None
+            request = await self.pre_process(request)
+
+        self.build_filters(request)
+        self.paginate(request)
+        self.ordenate(request)
 
         if func:
             if method in ['post', 'patch']:
-                response = await func(request, match=match.groups(), body=body)
+                response = await func(request, match=match, body=body)
             else:
-                response = await func(request, match=match.groups())
+                response = await func(request, match=match)
         else:
             response = await handler(request)
 
         if type(response) == dict:
-            response = self.serialize(response)
+            response = await self.serialize(response)
 
         return response
 
@@ -296,19 +305,25 @@ class BaseResource(View):
     #########################################################
     # Funçoes dentro do Resource
     #########################################################
-    def serialize(self, result, **kwargs):
+    async def serialize(self, result, **kwargs):
         response = kwargs.get('response')
+
         if type(result) == JsonResponse:
             return result
 
         if response:
             return response
 
-        if isinstance(result, list):
-            for row in result:
-                self.dehydrate(row)
-        else:
-            result = self.dehydrate(result)
+        if not self.count_results:
+            if isinstance(result, list):
+                for row in result:
+                    self.dehydrate(row)
+
+            elif type(result) == dict and result.get('objects'):
+                for row in result['objects']:
+                    self.dehydrate(row)
+            else:
+                result = self.dehydrate(result)
 
         return JsonResponse(result)
 
@@ -327,7 +342,13 @@ class BaseResource(View):
     def hydrate(self, body):
         return body
 
+    async def pre_process(self, request):
+        return request
+
     def dehydrate(self, response):
+        return response
+
+    async def post_process(self, response):
         return response
 
     #########################################################
@@ -349,6 +370,7 @@ class BaseResource(View):
             f'SELECT count(DISTINCT {table}.id) FROM',
             query,
         )
+
         connection = connections[self.account_db]
         cursor = connection.cursor()
         cursor.execute(query, params)
@@ -382,6 +404,9 @@ class BaseResource(View):
             return self.count_results
 
         results = await self.alter_list(results)
+
+        if self.normalized:
+            return results
 
         if self.normalize_list:
             normalized = {}
@@ -477,6 +502,7 @@ class BaseResource(View):
 
     async def get_obj(self, id):
         related_models = list(self.edit_related_fields.keys())
+
         if related_models:
             self.queryset = self.queryset.select_related(*related_models)
 
@@ -500,6 +526,12 @@ class BaseResource(View):
             for field in self.edit_related_fields[model]:
                 results[model][field] = getattr(obj, field, None)
 
+        for key, value in self.edit_set.items():
+            query = getattr(self.obj, key)
+            results[key] = []
+            async for result in query.values(*value):
+                results[key].append(result)
+
         return results
 
     async def _get_objs(self, request):
@@ -511,10 +543,10 @@ class BaseResource(View):
         if match:
             id = match[2]
             data = await self.get_obj(id)
-            return self.serialize(data)
+            return await self.serialize(data)
         else:
             data = await self._get_objs(request)
-            return self.serialize(data)
+            return await self.serialize(data)
 
     #########################################################
     # DELETE
@@ -532,7 +564,7 @@ class BaseResource(View):
         if match:
             id = match[2]
             results = await self.delete_obj(id)
-            return self.serialize(results)
+            return await self.serialize(results)
         else:
             raise HTTPException(404, "Item not found")
 
@@ -607,6 +639,10 @@ class BaseResource(View):
                     key += '_id'
                     value = int(value)
                 to_update[key] = value
+
+                old_value = getattr(self.obj, key)
+                self.diff[key] = {'old': old_value, 'new': value}
+
                 setattr(self.obj, key, value)
 
         await self.model.objects.filter(pk=id).aupdate(**to_update)
@@ -622,28 +658,42 @@ class BaseResource(View):
         try:
             body = request.json
         except Exception:
-            return HTTPException(
+            raise HTTPException(
                 400, 'Invalid body'
             )
         match = re_id.match(request.path_info)
         if match:
             results = await self._update_obj(match[2], body)
-            return self.serialize(results)
+            results = await self.post_process(results)
+            return await self.serialize(results)
         else:
-            return HTTPException(404, "Item not found")
+            raise HTTPException(404, "Item not found")
 
     #########################################################
     # POST
     #########################################################
     async def create_obj(self, request, body):
+
+        keys = list(body.keys())
+        allowed = False
+        if self.create_fields:
+            allowed = all(elem in self.update_fields for elem in keys)
+
+        if not allowed:
+            if self.create_fields:
+                raise HTTPException(403, "Changes on this field is not allowed")
+            raise HTTPException(500, "Create fields not defined")
+
         to_save = {}
         user = self.user
 
         if user:
             if 'created_by' in self.all_fields:
-                to_save['created_by_id'] = user.id
+                to_save['created_by_id'] = user['id']
+            if 'updated_by' in self.all_fields:
+                to_save['updated_by_id'] = user['id']
             if 'owner' in self.all_fields:
-                to_save['owner_id'] = user.id
+                to_save['owner_id'] = user['id']
 
         for field in self.model._meta.local_fields:
             if field.primary_key:
@@ -653,16 +703,10 @@ class BaseResource(View):
             if field.many_to_one:
                 field_key = field.name + '_id'
 
-            if body.get(field_key):
+            if body.get(field_key) is not None:
                 to_save[field_key] = body[field_key]
 
-        # try:
         obj = await self.model.objects.acreate(**to_save)
-        # except Exception as err:
-        #     error = err.__str__()
-        #     return HTTPException(
-        #         status=400, detail=error
-        #     )
 
         self.obj = obj
         self.obj_id = obj.id
@@ -672,18 +716,16 @@ class BaseResource(View):
     async def post(self, request):
         match = re_id.match(request.path_info)
         if match:
-            return HTTPException(status=403, detail="Not allowed")
+            raise HTTPException(403, "Path not allowed")
 
         body = request.json
-        # try:
-        result = await self.create_obj(request, body)
-        # except Exception as err:
-        #     error = err.__str__()
-        #     return HTTPException(
-        #         status=400, detail=error
-        #     )
+        try:
+            result = await self.create_obj(request, body)
+        except Exception as err:
+            error = err.__str__()
+            raise HTTPException(400, error)
 
-        return self.serialize(result)
+        return await self.serialize(result)
 
 
 class BaseTagsResource(BaseResource):

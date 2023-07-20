@@ -6,7 +6,7 @@ from django.db import models
 from django.db.models import Func, Count, Sum, Max, Min, Avg, Variance, StdDev
 import pandas as pd
 
-from util.date import Dates
+from .dates import Dates
 
 
 CALC = {
@@ -168,7 +168,7 @@ def aggregate(
     return {'total': data['aggregated_total']}
 
 
-def group_by(
+async def group_by(
     model, on_field, additional_fields, calc, groups, order,
     timezone, date_group, limit, distinct
 ):
@@ -239,7 +239,12 @@ def group_by(
 
     # Valores a serem retornados
     model = model.values(*groups, *keys, *additional_fields)
-    return list(model), groups
+
+    results = []
+    async for result in model:
+        results.append(result)
+
+    return results, groups
 
 
 def get_period(period, timezone):
@@ -398,7 +403,7 @@ def normalize_groups(
     return values, keys
 
 
-def get_results(timezone, data):
+async def get_results(timezone, data):
     model = data['model']
     model = get_model(model)
     model = model.objects
@@ -444,7 +449,7 @@ def get_results(timezone, data):
         model = model.extra(**extra)
 
     if groups or date_group:
-        results, groups = group_by(
+        results, groups = await group_by(
             model, on_field, additional_fields, calc, groups,
             order, timezone, date_group, limit, distinct
         )
