@@ -1,6 +1,5 @@
 # from typing import Any
 
-import decimal
 # import importlib
 import json
 import os
@@ -25,20 +24,22 @@ from settings.env import REDIS_PREFIX
 re_id = re.compile(r'(.*)\/(\d+)(\/.)?$')
 search_regex = re.compile(r'__isnull|__gte|__lte|__lt|__gt|__startswith')
 
+REDIS_SERVER = os.environ['REDIS_SERVER']
+REDIS_DB = 1
+
 
 async def method_not_allowed(self, **kwargs):
     raise HTTPException(405, 'Method not allowed')
-
-
-def decoder(obj):
-    if isinstance(obj, decimal.Decimal):
-        return float(obj)
 
 
 class BaseResource(View):
     authenticated = False
     allowed_methods = ['delete', 'get', 'patch', 'post']
     routes = []
+
+    cache = False
+    cache_ttl = 60
+    session_cache = False
 
     limit = 25
     page = 1
@@ -133,22 +134,17 @@ class BaseResource(View):
         return None, None, None
 
     async def dispatch(self, request, *args, **kwargs) -> None:
-
-        REDIS_SERVER = os.environ['REDIS_SERVER']
-        REDIS_DB = 1
-        redis = await aioredis.Redis(
-            host=REDIS_SERVER, db=REDIS_DB, decode_responses=True
-        ).client()
         session_key = request.COOKIES.get('sid')
-
         if session_key:
+            redis = await aioredis.Redis(
+                host=REDIS_SERVER, db=REDIS_DB, decode_responses=True
+            ).client()
             prefix = f'{REDIS_PREFIX}:' if REDIS_PREFIX else ''
             session_key = f'{prefix}sessions:{session_key}'
             session = await redis.get(session_key)
+            await redis.close()
         else:
             session = None
-
-        await redis.close()
 
         if self.authenticated and not session:
             raise HTTPException(401, 'Not authorized')
@@ -165,7 +161,7 @@ class BaseResource(View):
             else:
                 self.account_db = 'default'
 
-        method = "get" if request.method == "HEAD" else request.method.lower()
+        self.method = "get" if request.method == "HEAD" else request.method.lower()
 
         # func é o método que será executado, caso exista rota personalizada
         func, match, allowed_methods = self.get_method(request, args, kwargs)
@@ -176,20 +172,36 @@ class BaseResource(View):
         if self.authenticated and not self.user:
             raise HTTPException(401, 'Not authorized')
 
-        if method not in self.allowed_methods:
-            raise HTTPException(405, f'{method} not allowed')
+        if self.method not in self.allowed_methods:
+            raise HTTPException(405, f'{self.method} not allowed')
 
         if not func:
-            handler = getattr(self, method, method_not_allowed)
+            handler = getattr(self, self.method, method_not_allowed)
 
-        if method in ['post', 'patch']:
+        self.cache = self.cache and self.method == 'get'
+        if self.cache:
+            self.cache_key = 'easyapi'
+            if self.session_cache:
+                self.cache_key += f':{session_key}'
+            self.cache_key += f':{request.path}'
+
+            redis = await aioredis.Redis(
+                host=REDIS_SERVER, db=REDIS_DB, decode_responses=True
+            ).client()
+            response = await redis.get(self.cache_key)
+            await redis.close()
+
+            if response:
+                return JsonResponse(json.loads(response), safe=False)
+
+        if self.method in ['post', 'patch']:
             try:
                 body = json.loads(request.body.decode('utf-8'))
             except Exception:
                 # Patch/post sem body
                 body = {}
 
-            body = self.hydrate(body)
+            body = await self.hydrate(body)
             request.json = body
         else:
             body = None
@@ -200,7 +212,7 @@ class BaseResource(View):
         self.ordenate(request)
 
         if func:
-            if method in ['post', 'patch']:
+            if self.method in ['post', 'patch']:
                 response = await func(request, match=match, body=body)
             else:
                 response = await func(request, match=match)
@@ -306,26 +318,40 @@ class BaseResource(View):
     # Funçoes dentro do Resource
     #########################################################
     async def serialize(self, result, **kwargs):
-        response = kwargs.get('response')
 
         if type(result) == JsonResponse:
             return result
 
+        response = kwargs.get('response')
         if response:
             return response
 
         if not self.count_results:
             if isinstance(result, list):
                 for row in result:
-                    self.dehydrate(row)
+                    await self.dehydrate(row)
 
             elif type(result) == dict and result.get('objects'):
                 for row in result['objects']:
-                    self.dehydrate(row)
+                    await self.dehydrate(row)
             else:
-                result = self.dehydrate(result)
+                result = await self.dehydrate(result)
 
-        return JsonResponse(result)
+        result = await self.post_process(result)
+        await self.save_cache(result)
+
+        return JsonResponse(result, safe=False)
+
+    async def save_cache(self, content):
+        if not self.cache:
+            return
+
+        redis = await aioredis.Redis(
+            host=REDIS_SERVER, db=REDIS_DB, decode_responses=True
+        ).client()
+        await redis.set(self.cache_key, json.dumps(content))
+        await redis.expire(self.cache_key, self.cache_ttl)
+        await redis.close()
 
     def filter_objs(self):
         pass
@@ -339,13 +365,13 @@ class BaseResource(View):
     async def alter_list(self, results):
         return results
 
-    def hydrate(self, body):
+    async def hydrate(self, body):
         return body
 
     async def pre_process(self, request):
         return request
 
-    def dehydrate(self, response):
+    async def dehydrate(self, response):
         return response
 
     async def post_process(self, response):
@@ -664,7 +690,6 @@ class BaseResource(View):
         match = re_id.match(request.path_info)
         if match:
             results = await self._update_obj(match[2], body)
-            results = await self.post_process(results)
             return await self.serialize(results)
         else:
             raise HTTPException(404, "Item not found")

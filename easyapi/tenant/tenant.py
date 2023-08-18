@@ -10,6 +10,10 @@ from redis import asyncio as aioredis
 from ..exception import HTTPException
 
 
+REDIS_SERVER = os.environ['REDIS_SERVER']
+REDIS_DB = 1
+
+
 class AccountStatus():
     """Situações possíveis do banco de dados no sistema.
 
@@ -86,8 +90,6 @@ async def save_connection(account):
     }
     connections.databases[account_db] = connection
 
-    REDIS_SERVER = os.environ['REDIS_SERVER']
-    REDIS_DB = 1
     redis = await aioredis.Redis(
         host=REDIS_SERVER, db=REDIS_DB, decode_responses=True
     ).client()
