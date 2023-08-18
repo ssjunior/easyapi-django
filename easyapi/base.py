@@ -180,7 +180,7 @@ class BaseResource(View):
 
         self.cache = self.cache and self.method == 'get'
         if self.cache:
-            self.cache_key = 'easyapi'
+            self.cache_key = f'{REDIS_PREFIX}:cache' if REDIS_PREFIX else 'easyapi:cache'
             if self.session_cache:
                 self.cache_key += f':{session_key}'
             self.cache_key += f':{request.path}'
