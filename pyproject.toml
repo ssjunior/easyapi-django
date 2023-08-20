@@ -11,7 +11,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "easyapi_django"
-version = "0.0.37"
+version = "0.0.38"
 authors = [
   { name="Stamatios Stamou Jr", email="bushier.outsets.0c@icloud.com" },
 ]

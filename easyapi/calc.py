@@ -130,12 +130,11 @@ def get_fields(model, fields):
     return model._meta.get_fields()
 
 
-def aggregate(
+async def aggregate(
     model, on_field, calc, timezone, distinct
 ):
 
     calc = CALC[calc[0]]
-    print(calc, on_field)
 
     aggregation = ''
     if isinstance(on_field, list):
@@ -149,10 +148,10 @@ def aggregate(
         aggregation = on_field
 
     if on_field == 'id':
-        data = model.aggregate(aggregated_total=calc(aggregation, distinct=distinct))
+        data = await model.aaggregate(aggregated_total=calc(aggregation, distinct=distinct))
 
     elif isinstance(on_field, list):
-        data = model.aggregate(
+        data = await model.aaggregate(
             aggregated_total=calc(
                 aggregation,
                 output_field=models.FloatField(),
@@ -161,9 +160,9 @@ def aggregate(
         )
 
     elif on_field:
-        data = model.values(
+        data = await model.values(
             on_field
-        ).aggregate(aggregated_total=calc(aggregation, distinct=distinct))
+        ).aaggregate(aggregated_total=calc(aggregation, distinct=distinct))
 
     return {'total': data['aggregated_total']}
 
@@ -262,8 +261,6 @@ def get_period(period, timezone):
     if start_date and end_date:
         date_filter[f'{field}__gte'] = start_date
         date_filter[f'{field}__lte'] = end_date
-
-    return [date_filter, start_date, end_date]
 
     if not field and not (start_delta or end_delta):
         return {}, None, None
@@ -417,7 +414,6 @@ async def get_results(timezone, data):
 
     formulas = data.get('calc', {'formula': ['count'], 'field': 'id'})
     calc = formulas.get('formula', ['count'])
-    print(calc)
 
     on_field = formulas.get('field', 'id')
 
@@ -439,11 +435,8 @@ async def get_results(timezone, data):
     start_date = end_date = None
 
     if filter_by_period:
-
         period_filter, start_date, end_date = get_period(filter_by_period, timezone.zone)
         model = model.filter(**period_filter)
-
-        print(filter_by_period, period_filter)
 
     if extra:
         model = model.extra(**extra)
@@ -470,7 +463,7 @@ async def get_results(timezone, data):
         }
 
     else:
-        data = aggregate(
+        data = await aggregate(
             model, on_field, calc, timezone, distinct
         )
 
