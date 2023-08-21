@@ -51,13 +51,13 @@ class Dates(object):
         return start, end
 
     def day_delta(self, delta):
-        return self.today(-delta)
+        return self.today(-int(delta))
 
     def month_delta(self, delta=0):
-        return self.this_month(-delta)
+        return self.this_month(-int(delta))
 
     def year_delta(self, delta):
-        return self.this_year(-delta)
+        return self.this_year(-int(delta))
 
     def last_monthday(self, year=0, month=0):
         return calendar.monthrange(year, month)[-1]

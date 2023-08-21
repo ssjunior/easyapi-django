@@ -1,6 +1,8 @@
-from importlib import import_module
-from datetime import datetime
 from collections import OrderedDict
+from datetime import datetime
+from importlib import import_module
+import re
+
 
 from django.db import models
 from django.db.models import Func, Count, Sum, Max, Min, Avg, Variance, StdDev
@@ -8,6 +10,7 @@ import pandas as pd
 
 from .dates import Dates
 
+DELTA_REGEX = re.compile('^(?P<delta_int>-?\d*)(?P<delta_time>d{1}|m{1}|y{1})$')
 
 CALC = {
     'avg': Avg,
@@ -246,6 +249,22 @@ async def group_by(
     return results, groups
 
 
+def get_dates(match, timezone):
+    delta_int = match['delta_int']
+    delta_time = match['delta_time']
+
+    if delta_time == 'd':
+        func = Dates(tz=timezone, remove_tz=False).day_delta
+
+    elif delta_time == 'm':
+        func = Dates(tz=timezone, remove_tz=False).month_delta
+
+    elif delta_time == 'y':
+        func = Dates(tz=timezone, remove_tz=False).year_delta
+
+    return func(delta_int)
+
+
 def get_period(period, timezone):
     if not period:
         return {}, None, None
@@ -253,38 +272,31 @@ def get_period(period, timezone):
     field = period.get('field')
     start_delta = period.get('start_delta')
     end_delta = period.get('end_delta')
+    start_date = period.get('start_date')
+    end_date = period.get('end_date')
+
+    if not field and not (start_date or end_date or start_delta or end_delta):
+        return {}, None, None
 
     date_filter = {}
 
-    start_date = period.get('start_date')
-    end_date = period.get('end_date')
-    if start_date and end_date:
-        date_filter[f'{field}__gte'] = start_date
-        date_filter[f'{field}__lte'] = end_date
-
-    if not field and not (start_delta or end_delta):
-        return {}, None, None
-
-    if period['type'] == 'day':
-        func = Dates(tz=timezone, remove_tz=False).day_delta
-
-    elif period['type'] == 'month':
-        func = Dates(tz=timezone, remove_tz=False).month_delta
-
-    elif period['type'] == 'year':
-        func = Dates(tz=timezone, remove_tz=False).year_delta
-
-    if start_delta:
-        (start_date, end_date) = func(start_delta)
-
-    if (end_delta or end_delta == 0) and end_delta != start_delta:
-        (_, end_date) = func(end_delta)
-
-    if start_delta:
+    if start_date:
         date_filter[f'{field}__gte'] = start_date
 
-    if end_delta or end_delta == 0:
+    if end_date:
         date_filter[f'{field}__lte'] = end_date
+
+    if start_delta:
+        match = DELTA_REGEX.search(start_delta)
+        if match:
+            (start_date, _) = get_dates(match, timezone)
+            date_filter[f'{field}__gte'] = start_date
+
+    if end_delta:
+        match = DELTA_REGEX.search(end_delta)
+        if match:
+            (_, end_date) = get_dates(match, timezone)
+            date_filter[f'{field}__lte'] = end_date
 
     return [date_filter, start_date, end_date]
 
@@ -409,6 +421,7 @@ async def get_results(timezone, data):
     order = data.get('order', [])
     limit = data.get('limit')
     raw = data.get('raw')
+    keys = data.get('keys')
 
     distinct = data.get('distinct', False)
 
@@ -447,19 +460,36 @@ async def get_results(timezone, data):
             order, timezone, date_group, limit, distinct
         )
 
-        keys = []
+        results_keys = []
         if results:
             if raw:
-                keys = groups
+                results_keys = groups
             else:
-                results, keys = normalize_groups(
+                results, results_keys = normalize_groups(
                     results, additional_fields, calc, timezone, start_date, end_date,
                     date_group.get('group_by'), groups
                 )
 
+        if keys:
+            new_keys = []
+            new_results = []
+            for key in results_keys:
+                new_keys.append(keys[key])
+
+            for result in results:
+                new_result = {**result}
+                for key, value in result.items():
+                    if key in keys:
+                        new_result[keys[key]] = value
+
+                new_results.append(new_result)
+
+            results = new_results
+            results_keys = new_keys
+
         data = {
             'data': results,
-            'keys': keys
+            'keys': results_keys
         }
 
     else:
