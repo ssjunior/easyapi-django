@@ -105,21 +105,23 @@ class BaseResource(View):
 
                 if field.concrete and field.many_to_one:
                     self.fk_fields.append(field.name)
+                    fields.append(f'{field.name}_id')
                     continue
 
-                if not field.concrete and field.one_to_many:
-                    #     self.related_fields.append(field.name)
-                    continue
+                # if not field.concrete and field.one_to_many:
+                #     self.related_fields.append(field.name)
+                #     continue
 
             all_fields = [
-                field.name for field in self.model._meta.local_fields]
+                field.name for field in self.model._meta.local_fields
+            ]
             self.all_fields = all_fields + self.m2m_fields
 
             self.fields = fields
             self.list_fields = self.list_fields or fields
 
             if not self.edit_fields:
-                self.edit_fields = fields  # + m2m_fields
+                self.edit_fields = [field.column for field in self.model._meta.local_fields]  # + m2m_fields
 
             self.queryset = self.model.objects
 
@@ -161,7 +163,7 @@ class BaseResource(View):
             else:
                 self.account_db = 'default'
 
-        self.method = "get" if request.method == "HEAD" else request.method.lower()
+        self.method = 'get' if request.method == 'HEAD' else request.method.lower()
 
         # func é o método que será executado, caso exista rota personalizada
         func, match, allowed_methods = self.get_method(request, args, kwargs)
@@ -173,7 +175,7 @@ class BaseResource(View):
             raise HTTPException(401, 'Not authorized')
 
         if self.method not in self.allowed_methods:
-            raise HTTPException(405, f'{self.method} not allowed')
+            raise HTTPException(405, f'{self.method.upper()} not allowed')
 
         if not func:
             handler = getattr(self, self.method, method_not_allowed)
@@ -231,10 +233,11 @@ class BaseResource(View):
         if hasattr(self, 'model_filter'):
             self.queryset = self.queryset.filter(**self.model_filter)
 
-        if request.GET.get('search') and self.search_fields:
+        if request.GET.get('search'):
+            self.search_fields += ['id']
             filters = reduce(
                 operator.or_, [
-                    Q((f"{field}__{self.search_operator}",
+                    Q((f'{field}__{self.search_operator}',
                       request.GET.get('search')))
                     for field in self.search_fields
                 ]
@@ -331,7 +334,7 @@ class BaseResource(View):
                 for row in result:
                     await self.dehydrate(row)
 
-            elif type(result) == dict and result.get('objects'):
+            elif type(result) == dict and 'objects' in result:
                 for row in result['objects']:
                     await self.dehydrate(row)
             else:
@@ -511,7 +514,7 @@ class BaseResource(View):
         #     result = await self.add_m2m(result)
 
         for key in list(result):
-            if self.edit_fields and key not in self.edit_fields and key != '_result':
+            if self.edit_fields and key not in self.edit_fields and key not in self.edit_related_fields and key != '_result':
                 if result.get(key):
                     del result[key]
 
@@ -519,7 +522,7 @@ class BaseResource(View):
                 if result.get(key):
                     del result[key]
 
-            if key not in self.edit_fields and key in self.fk_fields and key in result:
+            if key not in self.edit_fields and key not in self.edit_related_fields and key in self.fk_fields and key in result:
                 result[key + '_id'] = {'id': result.pop(key)}
 
         result = await self.alter_detail(result)
@@ -592,7 +595,7 @@ class BaseResource(View):
             results = await self.delete_obj(id)
             return await self.serialize(results)
         else:
-            raise HTTPException(404, "Item not found")
+            raise HTTPException(404, 'Item not found')
 
     #########################################################
     # PATCH
@@ -623,7 +626,7 @@ class BaseResource(View):
 
         # Removendo tags
         tag_model.objects.filter(
-            **{tag_field: self.obj.id, "tag_id__in": set(existing_tags) - set(tags_ids)}
+            **{tag_field: self.obj.id, 'tag_id__in': set(existing_tags) - set(tags_ids)}
         ).delete()
 
         # Inserindo tags
@@ -631,7 +634,7 @@ class BaseResource(View):
         if insert_tags:
             tag_list = [
                 tag_model(
-                    **{"tag_id": tag_id, tag_field: self.obj.id}
+                    **{'tag_id': tag_id, tag_field: self.obj.id}
                 ) for tag_id in insert_tags
             ]
             tag_model.objects.bulk_create(tag_list)
@@ -639,16 +642,19 @@ class BaseResource(View):
     async def update_obj(self, id, body):
         keys = list(body.keys())
         allowed = False
+        diff = None
         if self.update_fields:
-            allowed = all(elem in self.update_fields for elem in keys)
+            diff = list(set(keys) - set(self.update_fields))
+            allowed = not diff
+            diff = (', ').join(list(diff))
 
         if not allowed:
-            raise HTTPException(403, "Changes on this field is not allowed")
+            raise HTTPException(403, f'Changes on field(s): {diff} is not allowed')
 
         try:
             self.obj = await self.queryset.aget(pk=id)
         except Exception:
-            raise HTTPException(404, "Item not found")
+            raise HTTPException(404, 'Item not found')
 
         to_update = {}
         for key, value in body.items():
@@ -692,44 +698,69 @@ class BaseResource(View):
             results = await self._update_obj(match[2], body)
             return await self.serialize(results)
         else:
-            raise HTTPException(404, "Item not found")
+            raise HTTPException(404, 'Item not found')
 
     #########################################################
     # POST
     #########################################################
     async def create_obj(self, request, body):
-
         keys = list(body.keys())
         allowed = False
+        diff = None
         if self.create_fields:
-            allowed = all(elem in self.update_fields for elem in keys)
+            diff = list(set(keys) - set(self.create_fields))
+            allowed = not diff
+            diff = (', ').join(diff)
 
         if not allowed:
             if self.create_fields:
-                raise HTTPException(403, "Changes on this field is not allowed")
-            raise HTTPException(500, "Create fields not defined")
+                raise HTTPException(403, f'Creation on field(s): {diff} is not allowed')
+            raise HTTPException(500, 'Create fields not defined')
 
         to_save = {}
         user = self.user
 
         if user:
             if 'created_by' in self.all_fields:
-                to_save['created_by_id'] = user['id']
+                body['created_by_id'] = user['id']
             if 'updated_by' in self.all_fields:
-                to_save['updated_by_id'] = user['id']
+                body['updated_by_id'] = user['id']
             if 'owner' in self.all_fields:
-                to_save['owner_id'] = user['id']
+                body['owner_id'] = user['id']
+
+        blank_errors = []
+        null_errors = []
 
         for field in self.model._meta.local_fields:
             if field.primary_key:
                 continue
 
-            field_key = field.name
-            if field.many_to_one:
-                field_key = field.name + '_id'
+            allow_blank = field.blank
+            allow_null = field.null
+            default = field.has_default() or hasattr(field, 'auto_now') or hasattr(field, 'auto_now_add')
+
+            field_key = f'{field.name}_id' if field.is_relation else field.name
+
+            field_value = body.get(field_key)
+
+            if not default and not allow_blank and field_value == '':
+                blank_errors.append(field.verbose_name)
+
+            if not default and not allow_null and not field_value:
+                null_errors.append(field.verbose_name)
 
             if body.get(field_key) is not None:
                 to_save[field_key] = body[field_key]
+
+        if blank_errors or null_errors:
+            errors = ''
+            if blank_errors:
+                errors += 'Field(s): ' + ', '.join(blank_errors) + ' can\'t be blank. '
+
+            if null_errors:
+                errors += 'Field(s): ' + ', '.join(null_errors) + ' can\'t be null.'
+
+            raise HTTPException(403, errors)
 
         obj = await self.model.objects.acreate(**to_save)
 
@@ -741,7 +772,7 @@ class BaseResource(View):
     async def post(self, request):
         match = re_id.match(request.path_info)
         if match:
-            raise HTTPException(403, "Path not allowed")
+            raise HTTPException(403, 'Path not allowed')
 
         body = request.json
         try:

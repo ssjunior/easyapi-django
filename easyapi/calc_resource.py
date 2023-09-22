@@ -9,6 +9,6 @@ class Metrics(BaseResource):
 
     async def post(self, request):
         body = request.json
-        timezone = pytz.timezone(self.user.get('timezone') or 'UTC')
+        timezone = pytz.timezone(self.user.get('timezone', 'UTC'))
         results = await get_results(timezone, body)
         return results

@@ -4,11 +4,14 @@ from importlib import import_module
 import re
 
 
+from django.conf import settings
 from django.db import models
 from django.db.models import Func, Count, Sum, Max, Min, Avg, Variance, StdDev
 import pandas as pd
 
 from .dates import Dates
+
+USE_TZ = settings.USE_TZ
 
 DELTA_REGEX = re.compile('^(?P<delta_int>-?\d*)(?P<delta_time>d{1}|m{1}|y{1})$')
 
@@ -185,11 +188,16 @@ async def group_by(
         date_field = date_group['field']
         group_by = date_group['group_by']
         extracted = 'extracted_' + date_field
-
-        # Para ajustar a busca no db de acordo com o timezone
-        seconds_offset = timezone.utcoffset(datetime.utcnow()).total_seconds()
         truncate = EXTRACT[group_by.lower()]
-        exp = {extracted: truncate(date_field, tzinfo=timezone, interval=seconds_offset)}
+
+        if USE_TZ:
+            # Para ajustar a busca no db de acordo com o timezone
+            seconds_offset = timezone.utcoffset(datetime.utcnow()).total_seconds()
+            exp = {extracted: truncate(date_field, tzinfo=timezone, interval=seconds_offset)}
+        else:
+            exp = {extracted: truncate(date_field, tzinfo=timezone, interval=0)}
+            # exp = {extracted: truncate(date_field, interval=0)}
+
 
         model = model.annotate(
             **exp
@@ -253,14 +261,15 @@ def get_dates(match, timezone):
     delta_int = match['delta_int']
     delta_time = match['delta_time']
 
+    remove_tz = False if USE_TZ else True
     if delta_time == 'd':
-        func = Dates(tz=timezone, remove_tz=False).day_delta
+        func = Dates(tz=timezone, remove_tz=remove_tz).day_delta
 
     elif delta_time == 'm':
-        func = Dates(tz=timezone, remove_tz=False).month_delta
+        func = Dates(tz=timezone, remove_tz=remove_tz).month_delta
 
     elif delta_time == 'y':
-        func = Dates(tz=timezone, remove_tz=False).year_delta
+        func = Dates(tz=timezone, remove_tz=remove_tz).year_delta
 
     return func(delta_int)
 
@@ -321,9 +330,14 @@ def normalize_dates(results, timezone, start_date, end_date, group_by, groups):
         'year': 'YS'
     }
 
-    dates = pd.date_range(
-        start_date, end_date, freq=FREQ[group_by.lower()], tz=timezone
-    )
+    if USE_TZ:
+        dates = pd.date_range(
+            start_date, end_date, freq=FREQ[group_by.lower()], tz=timezone
+        )
+    else:
+        dates = pd.date_range(
+            start_date, end_date, freq=FREQ[group_by.lower()],
+        )
 
     distinct = {}
     for result in results:
