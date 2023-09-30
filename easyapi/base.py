@@ -33,7 +33,7 @@ async def method_not_allowed(self, **kwargs):
 
 
 class BaseResource(View):
-    authenticated = False
+    authenticated = True
     allowed_methods = ['delete', 'get', 'patch', 'post']
     routes = []
 
