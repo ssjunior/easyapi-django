@@ -32,6 +32,32 @@ async def method_not_allowed(self, **kwargs):
     raise HTTPException(405, 'Method not allowed')
 
 
+def get_related_objects(args, model):
+    obj = args[0]
+    result = args[1]
+    count = args[2]
+    parent = args[3]
+    related_models = args[4]
+    related_fields = args[5]
+    model_obj = getattr(obj, model, None)
+
+    if count == 0:
+        # Adicionado para não ser excluído no return_result
+        if model not in related_models:
+            related_models[model] = []
+
+        if model_obj:
+            result[model] = {}
+            for field in related_fields[parent]:
+                result[model][field] = getattr(model_obj, field, None)
+                related_models[model].append(field)
+        else:
+            result[model] = None
+
+    else:
+        return model_obj, result, count - 1, parent, related_models, related_fields
+
+
 class BaseResource(View):
     authenticated = True
     allowed_methods = ['delete', 'get', 'patch', 'post']
@@ -58,8 +84,8 @@ class BaseResource(View):
     fk_fields = []
     m2m_fields = []
 
-    related_models = None
-    list_related_fields = None
+    related_models = {}
+    list_related_fields = {}
     many_to_many_models = {}
 
     filter_fields = []
@@ -478,6 +504,55 @@ class BaseResource(View):
 
         if self.list_related_fields:
             self.queryset = self.queryset.select_related(*self.list_related_fields.keys())
+
+        self.queryset = self.queryset.order_by(
+            self.order_by
+        )
+
+        if self.limit:
+            self.queryset = self.queryset[start:start + self.limit]
+
+        results = []
+
+        fields = request.GET.get('fields')
+        if fields:
+            list_fields = fields.split(',')
+            related = False
+        else:
+            list_fields = self.list_fields
+            related = True
+
+        async for row in self.queryset:
+            result = {}
+            if related:
+                for key, fields in self.list_related_fields.items():
+                    model = key.split('__')
+                    count = len(model) - 1
+                    reduce(
+                        get_related_objects, model, (row, result, count, key, self.related_models, self.list_related_fields)
+                    )
+
+            for field in list_fields:
+                result[field] = getattr(row, field, None)
+
+            results.append(result)
+
+        return results
+
+    async def get_objs_old(self, request):
+        self.get_filters(request)
+        self.filter_objs()
+
+        if request.GET.get('count'):
+            return await self.count()
+
+        if self.page > 0:
+            start = (self.page - 1) * self.limit
+        else:
+            start = 0
+
+        if self.list_related_fields:
+            self.queryset = self.queryset.select_related(*self.list_related_fields.keys())
             for key, value in self.list_related_fields.items():
                 self.list_fields.append(f'{key}__id')
                 for field in value:
@@ -491,7 +566,14 @@ class BaseResource(View):
             self.queryset = self.queryset[start:start + self.limit]
 
         results = []
-        async for result in self.queryset.values(*self.list_fields):
+
+        fields = request.GET.get('fields')
+        if fields:
+            values = fields.split(',')
+        else:
+            values = self.list_fields
+
+        async for result in self.queryset.values(*values):
             if self.list_related_fields:
                 for key, value in self.list_related_fields.items():
                     result[key] = {}
@@ -510,11 +592,14 @@ class BaseResource(View):
         return results
 
     async def return_result(self, result):
-        # if type(result) != dict:
-        #     result = await self.add_m2m(result)
-
         for key in list(result):
-            if self.edit_fields and key not in self.edit_fields and key not in self.edit_related_fields and key != '_result':
+            if (
+                self.edit_fields and
+                key not in self.edit_fields and
+                key not in self.edit_related_fields and
+                key != '_result' and
+                key not in self.related_models
+            ):
                 if result.get(key):
                     del result[key]
 
@@ -522,7 +607,13 @@ class BaseResource(View):
                 if result.get(key):
                     del result[key]
 
-            if key not in self.edit_fields and key not in self.edit_related_fields and key in self.fk_fields and key in result:
+            if (
+                key not in self.edit_fields and
+                key not in self.edit_related_fields and
+                key in self.fk_fields and
+                key not in self.related_models and
+                key in result
+            ):
                 result[key + '_id'] = {'id': result.pop(key)}
 
         result = await self.alter_detail(result)
@@ -530,38 +621,56 @@ class BaseResource(View):
         return result
 
     async def get_obj(self, id):
-        related_models = list(self.edit_related_fields.keys())
+        if self.edit_related_fields:
+            self.queryset = self.queryset.select_related(*self.edit_related_fields.keys())
 
-        if related_models:
-            self.queryset = self.queryset.select_related(*related_models)
-
-        # para uso dentro dos resources
         self.obj = await self.queryset.filter(pk=id).afirst()
-
         if not self.obj:
             raise HTTPException(404, 'Object does not exist')
 
-        results = {}
+        result = {}
+
+        def get_field(args, model):
+            obj = args[0]
+            result = args[1]
+            count = args[2]
+            parent = args[3]
+            model_obj = getattr(obj, model, None)
+
+            if count == 0:
+                # Adicionado para não ser excluído no return_result
+                if model not in self.related_models:
+                    self.related_models[model] = []
+
+                if model_obj:
+                    result[model] = {}
+                    for field in self.edit_related_fields[parent]:
+                        result[model][field] = getattr(model_obj, field, None)
+                        self.related_models[model].append(field)
+                else:
+                    result[model] = None
+
+            else:
+                return model_obj, result, count - 1, parent
+
+        for key, value in self.edit_related_fields.items():
+            model = key.split('__')
+            count = len(model) - 1
+            reduce(
+                get_related_objects, model, (self.obj, result, count, key, self.related_models, self.edit_related_fields)
+            )
+
         for field in self.edit_fields:
-            results[field] = getattr(self.obj, field, None)
+            result[field] = getattr(self.obj, field, None)
 
-        for model in related_models:
-            obj = getattr(self.obj, model, None)
-            if not obj:
-                results[model] = None
-                continue
-
-            results[model] = {}
-            for field in self.edit_related_fields[model]:
-                results[model][field] = getattr(obj, field, None)
-
+        # results = {}
         for key, value in self.edit_set.items():
             query = getattr(self.obj, key)
-            results[key] = []
-            async for result in query.values(*value):
-                results[key].append(result)
+            result[key] = []
+            async for item in query.values(*value):
+                result[key].append(item)
 
-        return results
+        return result
 
     async def _get_objs(self, request):
         data = await self.get_objs(request)
