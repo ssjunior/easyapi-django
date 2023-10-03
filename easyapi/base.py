@@ -233,7 +233,8 @@ class BaseResource(View):
             request.json = body
         else:
             body = None
-            request = await self.pre_process(request)
+
+        request = await self.pre_process(request)
 
         self.build_filters(request)
         self.paginate(request)
